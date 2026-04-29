@@ -1,4 +1,7 @@
+import base64
+import hashlib
 import json
+import secrets
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -35,6 +38,11 @@ def login_flow() -> dict:
     Returns {"access_token": str, "refresh_token": str}.
     Raises RuntimeError on timeout or missing tokens.
     """
+    # PKCE — generate verifier and challenge before opening the browser
+    code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(96)).rstrip(b"=").decode()
+    digest = hashlib.sha256(code_verifier.encode()).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
     received: dict = {}
 
     class _Handler(BaseHTTPRequestHandler):
@@ -67,12 +75,22 @@ def login_flow() -> dict:
     server = HTTPServer(("localhost", CALLBACK_PORT), _Handler)
     server.timeout = 120  # 2-minute window
 
-    webbrowser.open(f"{API_BASE}/auth/github")
+    auth_url = (
+        f"{API_BASE}/auth/github"
+        f"?cli=true"
+        f"&code_challenge={code_challenge}"
+        f"&code_challenge_method=S256"
+    )
+    webbrowser.open(auth_url)
 
     server.handle_request()
     server.server_close()
 
     if not received.get("access_token") or not received.get("refresh_token"):
         raise RuntimeError("Login timed out or tokens were not received. Please try again.")
+
+    # Store code_verifier alongside the tokens in case downstream token
+    # exchange requires it (e.g. after a future migration to GitHub Apps).
+    received["code_verifier"] = code_verifier
 
     return received
